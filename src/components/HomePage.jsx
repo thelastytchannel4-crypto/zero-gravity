@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 const STYLES = [
-  { id: 'classic', name: 'Classic', preview: 'Zero Gravity • Yellow Active' },
+  { id: 'mrbeast', name: 'MrBeast', preview: 'Bangers Font • Yellow Active' },
   { id: 'karaoke', name: 'Karaoke', preview: 'Two Lines • Green Highlight' },
   { id: 'beasty', name: 'Beasty', preview: '1 Word • HUGE • Slam In' },
   { id: 'deep-diver', name: 'Deep Diver', preview: 'Pills • Dark on White' },

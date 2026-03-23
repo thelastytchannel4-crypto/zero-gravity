@@ -10,14 +10,22 @@ import { floatToWavBlob } from './utils/wav'
 // Simple Devanagari to Roman transliteration
 function transliterateToRoman(text) {
   const map = {
-    'ा': 'a', 'ि': 'i', 'ी': 'ee', 'ु': 'u', 'ू': 'oo', 'ृ': 'ri', 'े': 'e', 'ै': 'ai', 'ो': 'o', 'ौ': 'au', 'ं': 'n',
-    'क': 'k', 'ख': 'kh', 'ग': 'g', 'घ': 'gh', 'ङ': 'ng', 'च': 'ch', 'छ': 'chh', 'ज': 'j', 'झ': 'jh', 'ञ': 'ny',
-    'ट': 't', 'ठ': 'th', 'ड': 'd', 'ढ': 'dh', 'ण': 'n', 'त': 't', 'थ': 'th', 'द': 'd', 'ध': 'dh', 'न': 'n',
-    'प': 'p', 'फ': 'f', 'ब': 'b', 'भ': 'bh', 'म': 'm', 'य': 'y', 'र': 'r', 'ल': 'l', 'व': 'v', 'श': 'sh', 
-    'ष': 'sh', 'स': 's', 'ह': 'h', 'क्ष': 'ksh', 'त्र': 'tr', 'ज्ञ': 'gy',
-    'अ': 'a', 'आ': 'aa', 'इ': 'i', 'ई': 'ee', 'उ': 'u', 'ऊ': 'oo', 'ए': 'e', 'ऐ': 'ai', 'ओ': 'o', 'औ': 'au'
+    'अ':'a','आ':'aa','इ':'i','ई':'ee','उ':'u','ऊ':'oo','ऋ':'ri','ए':'e','ऐ':'ai','ओ':'o','औ':'au',
+    'क':'k','ख':'kh','ग':'g','घ':'gh','ङ':'ng',
+    'च':'ch','छ':'chh','ज':'j','झ':'jh','ञ':'ny',
+    'ट':'t','ठ':'th','ड':'d','ढ':'dh','ण':'n',
+    'त':'t','थ':'th','द':'d','ध':'dh','न':'n',
+    'प':'p','फ':'f','ब':'b','भ':'bh','म':'m',
+    'य':'y','र':'r','ल':'l','व':'v','श':'sh','ष':'sh','स':'s','ह':'h',
+    'क्ष':'ksh','त्र':'tr','ज्ञ':'gy',
+    'ा':'a','ि':'i','ी':'ee','ु':'u','ू':'oo','ृ':'ri','े':'e','ै':'ai','ो':'o','ौ':'au',
+    'ं':'n','ः':'h','्':''
   }
-  return text.split('').map(char => map[char] || char).join('')
+  let result = ''
+  for (let i = 0; i < text.length; i++) {
+    result += map[text[i]] !== undefined ? map[text[i]] : text[i]
+  }
+  return result
 }
 
 export default function App() {
@@ -28,7 +36,7 @@ export default function App() {
   const [videoURL, setVideoURL] = useState(null)
   const [captions, setCaptions] = useState([])
   const [selectedLanguage, setSelectedLanguage] = useState('auto')
-  const [selectedStyle, setSelectedStyle] = useState('classic')
+  const [selectedStyle, setSelectedStyle] = useState('mrbeast')
   
   const [processingError, setProcessingError] = useState(null)
   const [isTranscribing, setIsTranscribing] = useState(false)
@@ -41,7 +49,9 @@ export default function App() {
       setPage('home')
     }
     const storedStyle = localStorage.getItem('CAPTION_STYLE')
-    if (storedStyle) setSelectedStyle(storedStyle)
+    if (storedStyle) {
+       setSelectedStyle(storedStyle === 'classic' ? 'mrbeast' : storedStyle)
+    }
   }, [])
 
   const handleSetStyle = (s) => {
@@ -87,16 +97,12 @@ export default function App() {
       formData.append('model', 'whisper-large-v3-turbo')
       formData.append('response_format', 'verbose_json')
       formData.append('timestamp_granularities[]', 'word')
+      formData.append('task', 'transcribe') // Ensures phonetic transcription, not English translation
 
       if (language === 'en') {
         formData.append('language', 'en')
       } else if (language === 'hi' || language === 'hinglish') {
         formData.append('language', 'hi')
-      }
-
-      // We can also prepend a prompt to help Hinglish naturally
-      if (language === 'hinglish') {
-         formData.append('prompt', 'Transcribe to Hinglish using Roman latin letters.')
       }
 
       const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {

@@ -10,62 +10,102 @@ const ACCENT_COLORS = ['#FF69B4', '#00FFFF', '#FFFF00'] // Pink, Cyan, Yellow
 export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
   const [currentTime, setCurrentTime] = useState(0)
 
-  // Chunking logic based on active style
+  // Chunking logic based on active style + 0.3s gap rule
   const chunks = useMemo(() => {
-    let chunkSize = 3; // default
-    if (captionStyle === 'beasty') chunkSize = 1;
-    else if (captionStyle === 'pod-p') chunkSize = 2;
-    else if (captionStyle === 'karaoke') chunkSize = 6; // enough for two lines
+    let maxWords = 3; 
+    if (captionStyle === 'beasty') maxWords = 1;
+    else if (captionStyle === 'pod-p') maxWords = 2;
+    else if (captionStyle === 'karaoke') maxWords = 6; 
 
     const grouped = []
-    let sentenceIndex = 0; // For tracking alternating colors per slice in Youshaei
+    let currentChunk = []
+    let sentenceIndex = 0; 
     
-    for (let i = 0; i < captions.length; i += chunkSize) {
-      const slice = captions.slice(i, i + chunkSize)
-      const youshaeiAccent = ACCENT_COLORS[sentenceIndex % ACCENT_COLORS.length]
-      sentenceIndex++;
+    // Helper to process words into correctly colored/styled rendering objects
+    const processWords = (chunkArray, startIndex, sIdx) => {
+       const youshaeiAccent = ACCENT_COLORS[sIdx % ACCENT_COLORS.length]
+       return chunkArray.map((w, idx) => {
+         const globalIdx = startIndex + idx;
+         let color = 'white';
+         let caseStyle = w.text;
+         if (captionStyle === 'beasty') {
+           color = BEASTY_COLORS[globalIdx % BEASTY_COLORS.length]
+           caseStyle = w.text.toUpperCase()
+         } else if (captionStyle === 'pod-p') {
+           color = POD_P_COLORS[globalIdx % POD_P_COLORS.length]
+           caseStyle = w.text.toUpperCase()
+         } else if (captionStyle === 'youshaei') {
+           const isUpper = globalIdx % 2 === 0;
+           caseStyle = isUpper ? w.text.toUpperCase() : (w.text.charAt(0).toUpperCase() + w.text.slice(1).toLowerCase());
+           color = isUpper ? 'white' : youshaeiAccent;
+         } else if (captionStyle === 'mrbeast' || captionStyle === 'karaoke') {
+           caseStyle = w.text.toUpperCase()
+         }
+         return { ...w, displayColor: color, displayCase: caseStyle, globalIdx }
+       })
+    }
 
-      grouped.push({
-        words: slice.map((w, idx) => {
-          const globalIdx = i + idx;
-          let color = 'white';
-          let caseStyle = w.text;
-          
-          if (captionStyle === 'beasty') {
-            color = BEASTY_COLORS[globalIdx % BEASTY_COLORS.length]
-            caseStyle = w.text.toUpperCase()
-          } else if (captionStyle === 'pod-p') {
-            color = POD_P_COLORS[globalIdx % POD_P_COLORS.length]
-            caseStyle = w.text.toUpperCase()
-          } else if (captionStyle === 'youshaei') {
-            const isUpper = globalIdx % 2 === 0;
-            caseStyle = isUpper 
-              ? w.text.toUpperCase() 
-              : (w.text.charAt(0).toUpperCase() + w.text.slice(1).toLowerCase());
-            color = isUpper ? 'white' : youshaeiAccent;
-          } else if (captionStyle === 'classic' || captionStyle === 'karaoke') {
-             caseStyle = w.text.toUpperCase()
-          }
+    for (let i = 0; i < captions.length; i++) {
+      const word = captions[i]
+      const gap = currentChunk.length > 0 ? (word.start - currentChunk[currentChunk.length - 1].end) : 0
+      
+      // Cut chunk if word limit reached or gap > 0.3s
+      if (currentChunk.length > 0 && (currentChunk.length >= maxWords || gap > 0.3)) {
+         grouped.push({
+           words: processWords(currentChunk, i - currentChunk.length, sentenceIndex),
+           start: currentChunk[0].start,
+           end: currentChunk[currentChunk.length - 1].end
+         })
+         currentChunk = []
+         sentenceIndex++
+      }
+      currentChunk.push(word)
+    }
 
-          return { ...w, displayColor: color, displayCase: caseStyle, globalIdx }
-        }),
-        start: slice[0].start,
-        end: slice[slice.length - 1].end
-      })
+    // Push final straggler chunk
+    if (currentChunk.length > 0) {
+       grouped.push({
+         words: processWords(currentChunk, captions.length - currentChunk.length, sentenceIndex),
+         start: currentChunk[0].start,
+         end: currentChunk[currentChunk.length - 1].end
+       })
     }
     return grouped
   }, [captions, captionStyle])
 
   useEffect(() => {
     let animationFrameId
+    const video = videoRef.current
+    if (!video) return
+
     const checkTime = () => {
-      if (videoRef.current) {
-        setCurrentTime(videoRef.current.currentTime)
+      setCurrentTime(video.currentTime)
+      if (!video.paused && !video.ended) {
+        animationFrameId = requestAnimationFrame(checkTime)
       }
-      animationFrameId = requestAnimationFrame(checkTime)
     }
-    animationFrameId = requestAnimationFrame(checkTime)
-    return () => cancelAnimationFrame(animationFrameId)
+
+    const handlePlay = () => checkTime()
+    const handlePause = () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId)
+      setCurrentTime(video.currentTime)
+    }
+    const handleSeek = () => setCurrentTime(video.currentTime)
+
+    video.addEventListener('play', handlePlay)
+    video.addEventListener('pause', handlePause)
+    video.addEventListener('seeked', handleSeek)
+
+    if (!video.paused && !video.ended) {
+      checkTime()
+    }
+
+    return () => {
+      video.removeEventListener('play', handlePlay)
+      video.removeEventListener('pause', handlePause)
+      video.removeEventListener('seeked', handleSeek)
+      if (animationFrameId) cancelAnimationFrame(animationFrameId)
+    }
   }, [videoRef])
 
   const activeChunk = chunks.find(chunk => currentTime >= chunk.start && currentTime <= chunk.end)
@@ -77,7 +117,7 @@ export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
   if (!isAnyWordActive) return null
 
   return (
-    <div className={`caption-overlay style-${captionStyle}`}>
+    <div key={activeChunk.start} className={`caption-overlay style-${captionStyle}`}>
       {activeChunk.words.map((word, index) => {
         const isActive = currentTime >= word.start && currentTime <= word.end
         const isPast = currentTime > word.end
@@ -114,10 +154,10 @@ export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
            inlineStyle.fontFamily = "'Orbitron', sans-serif";
            inlineStyle.fontWeight = 700;
         } 
-        else {
-           // classic
-           inlineStyle.fontFamily = "'Anton', sans-serif";
-           if (isActive) inlineStyle.color = '#FFE600';
+        else if (captionStyle === 'mrbeast') {
+           // MrBeast handling is largely CSS, but we inject inline text transform to be safe
+           // and handle active coloring dynamically in CSS or here
+           if (isActive) inlineStyle.color = '#FFE500';
            else inlineStyle.color = 'white';
         }
 
