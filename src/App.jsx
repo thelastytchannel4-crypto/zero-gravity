@@ -114,40 +114,42 @@ export default function App() {
       formData.append('model', 'whisper-large-v3-turbo')
       formData.append('response_format', 'verbose_json')
       formData.append('timestamp_granularities[]', 'word')
+      formData.append('temperature', '0.0')
 
       if (language === 'en') formData.append('language', 'en')
       if (language === 'hi') formData.append('language', 'hi')
-      // Hinglish/Auto → no language param (critical for mixed audio)
+      // hinglish + auto → NO language parameter (forces auto-detect)
 
       const HINGLISH_PROMPT = 
-        "Transcribe exactly in original spoken Hinglish (Hindi-English mix), " +
-        "keep all Hindi words in Roman script as heard, no translation to pure English, " +
-        "preserve slang like bhai yaar arre kya bol raha, exact natural phrasing only."
+        "Casual Indian Hinglish only. Transcribe exactly as spoken in Roman script: " +
+        "keep Hindi words unchanged (like bhai, yaar, arre, mast, scene hai, bol raha, kya, ho gaya), " +
+        "English words as is, full code-mixing preserved, slang intact, no translation to pure English, " +
+        "no normalization, no grammar fixes."
 
       const hiPrompt = "यह हिंदी ऑडियो है। बिल्कुल जैसा बोला गया वैसा देवनागरी में लिखो। अनुवाद मत करो।"
       const enPrompt = "English audio. Transcribe word-for-word exactly as spoken. No translation."
 
       formData.append('prompt', language === 'hinglish' ? HINGLISH_PROMPT : (language === 'hi' ? hiPrompt : enPrompt))
 
-      const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      const whisperResponse = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + apiKey },
         body: formData
       })
 
-      if (!response.ok) {
-        const errText = await response.text()
+      if (!whisperResponse.ok) {
+        const errText = await whisperResponse.text()
         let msg = errText
         try { const js = JSON.parse(errText); if (js.error?.message) msg = js.error.message } catch (_) {}
-        throw new Error('API Error: ' + msg)
+        throw new Error('Whisper Error: ' + msg)
       }
 
-      setProcessingStep('Generating captions...')
-      const result = await response.json()
+      setProcessingStep('Synthesizing captions...')
+      const result = await whisperResponse.json()
 
       if (!result.words || result.words.length === 0) throw new Error('No speech detected in this audio.')
 
-      const HALLUCINATIONS = new Set(['you', '...', '[music]', '[inaudible]', '[laughter]', ''])
+      const HALLUCINATIONS = new Set(['you', '...', '[music]', '[inaudible]', '[applause]', '[laughter]', ''])
       const rawWords = result.words.filter((w) => {
         const duration = w.end - w.start
         const cleanText = w.word.trim().toLowerCase().replace(/[.,!?;:'"()-]/g, '')
@@ -157,14 +159,70 @@ export default function App() {
 
       if (rawWords.length === 0) throw new Error('No speech detected in this audio.')
 
-      const transcribedWords = rawWords.map((w) => {
-        let text = w.word.trim()
-        if (language === 'hinglish') text = transliterateToRoman(text)
-        return { text, start: w.start, end: w.end }
-      })
+      let finalTranscribedWords = rawWords.map((w) => ({
+        text: w.word.trim(),
+        start: w.start,
+        end: w.end
+      }))
+
+      // ── Step 8: LLM Correction for Hinglish (Anti-Translation Layer) ───────
+      if (language === 'hinglish') {
+        setProcessingStep('Correcting translation errors...')
+        const fullText = finalTranscribedWords.map(w => w.text).join(' ')
+        
+        try {
+          const llmResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + apiKey,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: 'llama-3.1-8b-instant',
+              messages: [
+                {
+                  role: 'system',
+                  content: "You are a Hinglish expert. Rewrite the given transcription back to original spoken Hinglish in Roman script. Keep all code-mixing and slang (bhai, yaar, arre, mast, etc.). Direct transcription only. Output ONLY the fixed text."
+                },
+                {
+                  role: 'user',
+                  content: `This is a Whisper transcription that might have translated Hindi to English. Rewrite it back to EXACT original spoken Hinglish in Roman script only. Preserve the natural flow.\n\nTranscription: ${fullText}`
+                }
+              ],
+              temperature: 0.1
+            })
+          })
+
+          if (llmResponse.ok) {
+            const llmJson = await llmResponse.json()
+            const correctedText = llmJson.choices[0]?.message?.content?.trim()
+            if (correctedText) {
+              const correctedWords = correctedText.split(/\s+/).filter(w => w.length > 0)
+              
+              // Map corrected words back to original timestamps
+              // We use index-based mapping; if word count changed slightly, we distribute
+              finalTranscribedWords = finalTranscribedWords.map((original, idx) => {
+                const newWord = correctedWords[idx] || (idx === finalTranscribedWords.length - 1 ? correctedWords.slice(idx).join(' ') : '')
+                return {
+                  ...original,
+                  text: newWord || original.text
+                }
+              }).filter(w => w.text.length > 0)
+            }
+          }
+        } catch (llmErr) {
+          console.warn('LLM correction failed, using raw transcription:', llmErr)
+        }
+      }
+
+      // Final Transliteration if needed (though LLM is told Roman script)
+      const sanitizedWords = finalTranscribedWords.map(w => ({
+        ...w,
+        text: language === 'hinglish' ? transliterateToRoman(w.text) : w.text
+      }))
 
       setProcessingStep('Done!')
-      setCaptions(transcribedWords)
+      setCaptions(sanitizedWords)
       setPage('result')
 
     } catch (err) {
