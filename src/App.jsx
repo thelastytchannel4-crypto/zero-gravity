@@ -141,30 +141,41 @@ export default function App() {
       formData.append('model', 'whisper-large-v3-turbo')
       formData.append('response_format', 'verbose_json')
       formData.append('timestamp_granularities[]', 'word')
-      if (language === 'en')                                 formData.append('language', 'en')
-      else if (language === 'hi' || language === 'hinglish') formData.append('language', 'hi')
-      // auto → no language param
+      // ── Language param strategy ────────────────────────────────────────────
+      // English  → force 'en'  (prevents hallucination in other scripts)
+      // Hindi    → force 'hi'  (want Devanagari output, then transliterate)
+      // Hinglish → NO language param — intentional auto-detect.
+      //            Sending 'hi' coerces Devanagari output.
+      //            Sending 'en' coerces English translation.
+      //            Neither is correct. Auto-detect + rich prompt = best result.
+      // Auto     → no language param
+      if (language === 'en') formData.append('language', 'en')
+      if (language === 'hi') formData.append('language', 'hi')
+      // hinglish + auto → no language param (intentional)
 
-      // ── Whisper conditioning prompt (≤224 tokens each) ────────────────────
-      // Purpose: steer the model's output style without it hallucinating,
-      // translating, or adding text during silence/music.
+      // ── Few-shot Whisper conditioning prompts (≤224 tokens) ───────────────
+      // Whisper treats the prompt as a "previous transcript" — it biases the
+      // model toward the vocabulary, script & style demonstrated in examples.
+      // For Hinglish: seed with real Roman-script Hinglish so the model stays
+      // in that register instead of defaulting to English translation.
       const PROMPTS = {
         hinglish:
-          'Hinglish spoken audio. Transcribe EXACTLY as heard in Roman script — ' +
-          'mixed Hindi-English casual speech, slang intact. ' +
-          'Examples: "Bhai yeh scene fire hai yaar", "Kya chal raha hai bro", "Aaj ka din mast tha". ' +
-          'Do NOT translate to English. Do NOT use Devanagari. Do NOT fix grammar. ' +
-          'Skip silence, music, background noise — only transcribe clear spoken words.',
+          'Arre bhai, yeh scene toh fire hai yaar! ' +
+          'Kya chal raha hai bro, sab theek toh hai na? ' +
+          'Aaj ka din bohot mast tha, seriously next level experience tha. ' +
+          'Dekh yaar, isko samajhna padega properly. ' +
+          'Main bol raha tha ki yeh wala option better hai. ' +
+          'Transcribe EXACTLY as spoken in Roman script Hinglish. ' +
+          'Do NOT translate to English. Do NOT use Devanagari. Preserve all slang.',
         hi:
-          'Hindi audio. Bilkul jaisa bola gaya waisa Devanagari mein likho. ' +
-          'Anuwad mat karo. Vyakaran mat sudharo. ' +
-          'Khamoshi ya music ke dauran kuch mat likho.',
+          'यह हिंदी ऑडियो है। बिल्कुल जैसा बोला गया वैसा देवनागरी में लिखो। ' +
+          'अनुवाद मत करो। व्याकरण मत सुधारो।',
         en:
           'English audio. Transcribe word-for-word exactly as spoken. ' +
-          'No translation, no grammar fixes, no filler text during silence or music.',
+          'No translation, no grammar fixes, no text during silence or music.',
         auto:
           'Transcribe exactly as spoken in the original language. ' +
-          'No translation, no grammar fixes. Skip silence, music, background noise.',
+          'No translation. Skip silence and music.',
       }
       formData.append('prompt', PROMPTS[language] || PROMPTS.auto)
 
