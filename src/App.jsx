@@ -141,14 +141,37 @@ export default function App() {
       formData.append('model', 'whisper-large-v3-turbo')
       formData.append('response_format', 'verbose_json')
       formData.append('timestamp_granularities[]', 'word')
-      if (language === 'en')                          formData.append('language', 'en')
+      if (language === 'en')                                 formData.append('language', 'en')
       else if (language === 'hi' || language === 'hinglish') formData.append('language', 'hi')
       // auto → no language param
+
+      // ── Whisper conditioning prompt (≤224 tokens each) ────────────────────
+      // Purpose: steer the model's output style without it hallucinating,
+      // translating, or adding text during silence/music.
+      const PROMPTS = {
+        hinglish:
+          'Hinglish spoken audio. Transcribe EXACTLY as heard in Roman script — ' +
+          'mixed Hindi-English casual speech, slang intact. ' +
+          'Examples: "Bhai yeh scene fire hai yaar", "Kya chal raha hai bro", "Aaj ka din mast tha". ' +
+          'Do NOT translate to English. Do NOT use Devanagari. Do NOT fix grammar. ' +
+          'Skip silence, music, background noise — only transcribe clear spoken words.',
+        hi:
+          'Hindi audio. Bilkul jaisa bola gaya waisa Devanagari mein likho. ' +
+          'Anuwad mat karo. Vyakaran mat sudharo. ' +
+          'Khamoshi ya music ke dauran kuch mat likho.',
+        en:
+          'English audio. Transcribe word-for-word exactly as spoken. ' +
+          'No translation, no grammar fixes, no filler text during silence or music.',
+        auto:
+          'Transcribe exactly as spoken in the original language. ' +
+          'No translation, no grammar fixes. Skip silence, music, background noise.',
+      }
+      formData.append('prompt', PROMPTS[language] || PROMPTS.auto)
 
       // ── Step 6: Fetch with 60-second timeout ──────────────────────────────
       let response
       try {
-        const fetchP   = fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        const fetchP = fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
           method : 'POST',
           headers: { 'Authorization': 'Bearer ' + apiKey },
           body   : formData
@@ -178,8 +201,30 @@ export default function App() {
 
       if (!result.words || result.words.length === 0) throw new Error('No speech detected in this audio.')
 
-      // ── Step 7: Map words ─────────────────────────────────────────────────
-      const transcribedWords = result.words.map((w) => {
+      // ── Step 7: Post-process & map words ──────────────────────────────────
+      // Filter out noise artifacts before building caption list:
+      //   • Duration < 50ms  → likely a model glitch / background click
+      //   • start === end    → zero-length timestamp, meaningless
+      //   • text is blank / pure punctuation → nothing to display
+      //   • text is common hallucination filler (Whisper sometimes emits these)
+      const HALLUCINATIONS = new Set([
+        'you', '...', '[music]', '[inaudible]', '[applause]',
+        '[laughter]', '(music)', '(inaudible)', ''
+      ])
+
+      const rawWords = result.words.filter((w) => {
+        const duration = w.end - w.start
+        const clean    = w.word.trim().replace(/[.,!?;:'"()-]/g, '')
+        if (duration < 0.05)                     return false  // <50ms — noise
+        if (w.start === w.end)                   return false  // zero-length
+        if (clean.length === 0)                  return false  // punctuation only
+        if (HALLUCINATIONS.has(clean.toLowerCase())) return false
+        return true
+      })
+
+      if (rawWords.length === 0) throw new Error('No speech detected in this audio.')
+
+      const transcribedWords = rawWords.map((w) => {
         let text = w.word.trim()
         if (language === 'hinglish') text = transliterateToRoman(text)
         return { text, start: w.start, end: w.end }
