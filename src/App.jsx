@@ -5,9 +5,38 @@ import ProcessingPage from './components/ProcessingPage'
 import ResultPage from './components/ResultPage'
 import SpaceBackground from './components/SpaceBackground'
 import ErrorBoundary from './components/ErrorBoundary'
-import { floatToWavBlob } from './utils/wav'
 
-// Simple Devanagari to Roman transliteration
+// ─── WAV encoder (inline, no external util dependency) ───────────────────────
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i))
+}
+function floatTo16BitPCM(output, offset, input) {
+  for (let i = 0; i < input.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, input[i]))
+    output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true)
+  }
+}
+function encodeWAV(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2)
+  const view = new DataView(buffer)
+  writeString(view, 0, 'RIFF')
+  view.setUint32(4, 36 + samples.length * 2, true)
+  writeString(view, 8, 'WAVE')
+  writeString(view, 12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  writeString(view, 36, 'data')
+  view.setUint32(40, samples.length * 2, true)
+  floatTo16BitPCM(view, 44, samples)
+  return new Blob([buffer], { type: 'audio/wav' })
+}
+
+// ─── Devanagari → Roman transliteration ──────────────────────────────────────
 function transliterateToRoman(text) {
   const map = {
     'अ':'a','आ':'aa','इ':'i','ई':'ee','उ':'u','ऊ':'oo','ऋ':'ri','ए':'e','ऐ':'ai','ओ':'o','औ':'au',
@@ -31,129 +60,140 @@ function transliterateToRoman(text) {
 export default function App() {
   const [page, setPage] = useState('setup')
   const [apiKey, setApiKey] = useState('')
-  
+
   const [videoFile, setVideoFile] = useState(null)
   const [videoURL, setVideoURL] = useState(null)
   const [captions, setCaptions] = useState([])
   const [selectedLanguage, setSelectedLanguage] = useState('auto')
   const [selectedStyle, setSelectedStyle] = useState('mrbeast')
-  
+
   const [processingError, setProcessingError] = useState(null)
+  const [processingStep, setProcessingStep] = useState('')
   const [isTranscribing, setIsTranscribing] = useState(false)
 
-  // Initialize from LocalStorage
+  // ─── Init from localStorage ───────────────────────────────────────────────
   useEffect(() => {
     const storedKey = localStorage.getItem('GROQ_API_KEY')
-    if (storedKey) {
-      setApiKey(storedKey)
-      setPage('home')
-    }
+    if (storedKey) { setApiKey(storedKey); setPage('home') }
     const storedStyle = localStorage.getItem('CAPTION_STYLE')
-    if (storedStyle) {
-       setSelectedStyle(storedStyle === 'classic' ? 'mrbeast' : storedStyle)
-    }
+    if (storedStyle) setSelectedStyle(storedStyle === 'classic' ? 'mrbeast' : storedStyle)
   }, [])
 
-  const handleSetStyle = (s) => {
-    setSelectedStyle(s)
-    localStorage.setItem('CAPTION_STYLE', s)
-  }
+  const handleSetStyle = (s) => { setSelectedStyle(s); localStorage.setItem('CAPTION_STYLE', s) }
+  const handleSaveKey  = (key) => { localStorage.setItem('GROQ_API_KEY', key); setApiKey(key); setPage('home') }
+  const handleOpenSettings = () => setPage('setup')
 
-  const handleSaveKey = (key) => {
-    localStorage.setItem('GROQ_API_KEY', key)
-    setApiKey(key)
-    setPage('home')
-  }
-
-  const handleOpenSettings = () => {
-    setPage('setup')
-  }
-
+  // ─── Core transcription flow ──────────────────────────────────────────────
   const performGroqTranscription = async (file, language) => {
     setIsTranscribing(true)
     setProcessingError(null)
+    setProcessingStep('')
 
-    // Check size limit ~50MB limit to prevent memory crash or API 25MB limit 
-    // We'll throw early if it exceeds 50MB
-    if (file.size > 50 * 1024 * 1024) {
-      setProcessingError("Please use a video under 2 minutes")
+    // 90-second global safety timeout
+    const globalTimer = setTimeout(() => {
+      setProcessingError('Process timed out after 90 seconds. Please retry.')
       setIsTranscribing(false)
-      return
-    }
+    }, 90000)
 
     try {
-      // Decode audio in browser
+      // ── Step 1 ────────────────────────────────────────────────────────────
+      console.log('Step 1 - Video file received:', file.name, file.size)
+      setProcessingStep('Extracting audio from video...')
+
+      if (file.size > 50 * 1024 * 1024) throw new Error('Please use a video under 2 minutes')
+
+      // ── Step 2 ────────────────────────────────────────────────────────────
+      console.log('Step 2 - Starting audio extraction')
       const audioContext = new AudioContext({ sampleRate: 16000 })
-      const arrayBuffer = await file.arrayBuffer()
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+
+      // 30-second timeout on audio decode
+      let arrayBuffer
+      try {
+        const decodeP = file.arrayBuffer()
+        const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error('Audio extraction timed out after 30 seconds')), 30000))
+        arrayBuffer = await Promise.race([decodeP, timeoutP])
+      } catch (e) {
+        throw new Error('Audio extraction failed: ' + e.message)
+      }
+
+      // ── Step 3 ────────────────────────────────────────────────────────────
+      let audioBuffer
+      try {
+        audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+      } catch (e) {
+        throw new Error('Could not decode audio from video. Try a different file format.')
+      }
       const float32Array = audioBuffer.getChannelData(0)
+      console.log('Step 3 - Audio extracted successfully', float32Array.length)
 
-      // Convert to WAV
-      const wavBlob = floatToWavBlob(float32Array, 16000)
+      // ── Step 4 ────────────────────────────────────────────────────────────
+      console.log('Step 4 - Converting to WAV blob')
+      setProcessingStep('Converting audio format...')
+      const wavBlob = encodeWAV(float32Array, 16000)
+      console.log('Step 5 - WAV blob created', wavBlob.size)
 
-      // Prep FormData
+      // ── Step 5: Build FormData (NO task param — not supported by Groq) ───
+      console.log('Step 6 - Sending to Groq API')
+      setProcessingStep('Sending to Groq AI...')
+
       const formData = new FormData()
       formData.append('file', wavBlob, 'audio.wav')
       formData.append('model', 'whisper-large-v3-turbo')
       formData.append('response_format', 'verbose_json')
       formData.append('timestamp_granularities[]', 'word')
-      formData.append('task', 'transcribe') // Ensures phonetic transcription, not English translation
+      if (language === 'en')                          formData.append('language', 'en')
+      else if (language === 'hi' || language === 'hinglish') formData.append('language', 'hi')
+      // auto → no language param
 
-      if (language === 'en') {
-        formData.append('language', 'en')
-      } else if (language === 'hi' || language === 'hinglish') {
-        formData.append('language', 'hi')
+      // ── Step 6: Fetch with 60-second timeout ──────────────────────────────
+      let response
+      try {
+        const fetchP   = fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+          method : 'POST',
+          headers: { 'Authorization': 'Bearer ' + apiKey },
+          body   : formData
+        })
+        const toP = new Promise((_, rej) => setTimeout(() => rej(new Error('API request timed out after 60 seconds')), 60000))
+        response = await Promise.race([fetchP, toP])
+      } catch (e) {
+        throw new Error('Network request failed: ' + e.message)
       }
 
-      const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + apiKey },
-        body: formData
-      })
+      console.log('Step 7 - Groq response received, status:', response.status)
 
-      if (response.status === 401) {
-        throw new Error("Invalid API key — please check your Groq dashboard")
-      }
-      if (response.status === 413) {
-        throw new Error("Please use a video under 2 minutes")
-      }
+      if (response.status === 401) throw new Error('Invalid API key — please check your Groq dashboard')
+      if (response.status === 413) throw new Error('Please use a video under 2 minutes')
       if (!response.ok) {
         const errText = await response.text()
-        console.error("Groq Error Response:", errText)
-        let parsedErr = errText
-        try {
-          const js = JSON.parse(errText)
-          if (js.error && js.error.message) parsedErr = js.error.message
-        } catch(e) {}
-        throw new Error(`API Error: ${parsedErr}`)
+        console.error('Groq Error Response:', errText)
+        let msg = errText
+        try { const js = JSON.parse(errText); if (js.error?.message) msg = js.error.message } catch (_) {}
+        throw new Error('API Error: ' + msg)
       }
 
+      setProcessingStep('Generating captions...')
       const result = await response.json()
+      console.log('Step 7 - Full Groq result:', result)
+      console.log('Step 8 - Words array:', result.words)
 
-      if (!result.words || result.words.length === 0) {
-        throw new Error("No speech detected in this audio.")
-      }
+      if (!result.words || result.words.length === 0) throw new Error('No speech detected in this audio.')
 
-      // Map Groq words to our state
-      let transcribedWords = result.words.map((w) => {
+      // ── Step 7: Map words ─────────────────────────────────────────────────
+      const transcribedWords = result.words.map((w) => {
         let text = w.word.trim()
-        if (language === 'hinglish') {
-           text = transliterateToRoman(text)
-        }
-        return {
-          text: text,
-          start: w.start,
-          end: w.end
-        }
+        if (language === 'hinglish') text = transliterateToRoman(text)
+        return { text, start: w.start, end: w.end }
       })
 
+      setProcessingStep('Done!')
       setCaptions(transcribedWords)
       setPage('result')
 
     } catch (err) {
-      console.error(err)
-      setProcessingError(err.message || 'Network error occurred.')
+      console.error('Transcription error:', err)
+      setProcessingError(err.message || 'An unknown error occurred.')
     } finally {
+      clearTimeout(globalTimer)
       setIsTranscribing(false)
     }
   }
@@ -168,31 +208,23 @@ export default function App() {
   }
 
   const handleRetry = () => {
-    if (videoFile) {
-      performGroqTranscription(videoFile, selectedLanguage)
-    } else {
-      setPage('home')
-    }
+    if (videoFile) { setProcessingError(null); performGroqTranscription(videoFile, selectedLanguage) }
+    else setPage('home')
   }
 
   const handleReset = () => {
     if (videoURL) URL.revokeObjectURL(videoURL)
-    setVideoFile(null)
-    setVideoURL(null)
-    setCaptions([])
-    setPage('home')
+    setVideoFile(null); setVideoURL(null); setCaptions([]); setPage('home')
   }
 
   return (
     <ErrorBoundary>
       <SpaceBackground />
       <div className="app-container">
-        {page === 'setup' && (
-          <SetupPage onSave={handleSaveKey} />
-        )}
-        {page === 'home' && (
-          <HomePage 
-            onTranscribe={handleTranscribe} 
+        {page === 'setup'      && <SetupPage onSave={handleSaveKey} />}
+        {page === 'home'       && (
+          <HomePage
+            onTranscribe={handleTranscribe}
             selectedLanguage={selectedLanguage}
             setSelectedLanguage={setSelectedLanguage}
             onOpenSettings={handleOpenSettings}
@@ -201,19 +233,20 @@ export default function App() {
           />
         )}
         {page === 'processing' && (
-          <ProcessingPage 
-            error={processingError} 
-            onRetry={handleRetry} 
-            isTranscribing={isTranscribing} 
+          <ProcessingPage
+            error={processingError}
+            step={processingStep}
+            onRetry={handleRetry}
+            isTranscribing={isTranscribing}
           />
         )}
-        {page === 'result' && (
-          <ResultPage 
-            videoURL={videoURL} 
-            captions={captions} 
+        {page === 'result'     && (
+          <ResultPage
+            videoURL={videoURL}
+            captions={captions}
             selectedStyle={selectedStyle}
             language={selectedLanguage}
-            onReset={handleReset} 
+            onReset={handleReset}
           />
         )}
       </div>
