@@ -10,66 +10,73 @@ const ACCENT_COLORS = ['#FF69B4', '#00FFFF', '#FFFF00'] // Pink, Cyan, Yellow
 export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
   const [currentTime, setCurrentTime] = useState(0)
 
-  // Chunking logic based on active style + 0.3s gap rule
+  // ─── Chunking rules ──────────────────────────────────────────────────────
+  // • Gap > 0.8s  → hard break (silence, music, pause) → blank screen in gap
+  // • Gap < 1.0s  → merge into same phrase if word limit not hit
+  // • Max words per chunk by style
+  // • Chunk start = EXACT first word start, chunk end = EXACT last word end
+  // • No block shown during gap between chunks — enforced by activeChunk lookup
   const chunks = useMemo(() => {
-    let maxWords = 3; 
-    if (captionStyle === 'beasty') maxWords = 1;
-    else if (captionStyle === 'pod-p') maxWords = 2;
-    else if (captionStyle === 'karaoke') maxWords = 6; 
+    let maxWords = 3
+    if (captionStyle === 'beasty')    maxWords = 1
+    else if (captionStyle === 'pod-p')   maxWords = 2
+    else if (captionStyle === 'karaoke') maxWords = 6
+
+    const SILENCE_BREAK = 0.8  // gaps wider than this force a new chunk
 
     const grouped = []
     let currentChunk = []
-    let sentenceIndex = 0; 
-    
-    // Helper to process words into correctly colored/styled rendering objects
+    let sentenceIndex = 0
+
     const processWords = (chunkArray, startIndex, sIdx) => {
-       const youshaeiAccent = ACCENT_COLORS[sIdx % ACCENT_COLORS.length]
-       return chunkArray.map((w, idx) => {
-         const globalIdx = startIndex + idx;
-         let color = 'white';
-         let caseStyle = w.text;
-         if (captionStyle === 'beasty') {
-           color = BEASTY_COLORS[globalIdx % BEASTY_COLORS.length]
-           caseStyle = w.text.toUpperCase()
-         } else if (captionStyle === 'pod-p') {
-           color = POD_P_COLORS[globalIdx % POD_P_COLORS.length]
-           caseStyle = w.text.toUpperCase()
-         } else if (captionStyle === 'youshaei') {
-           const isUpper = globalIdx % 2 === 0;
-           caseStyle = isUpper ? w.text.toUpperCase() : (w.text.charAt(0).toUpperCase() + w.text.slice(1).toLowerCase());
-           color = isUpper ? 'white' : youshaeiAccent;
-         } else if (captionStyle === 'mrbeast' || captionStyle === 'karaoke') {
-           caseStyle = w.text.toUpperCase()
-         }
-         return { ...w, displayColor: color, displayCase: caseStyle, globalIdx }
-       })
+      const youshaeiAccent = ACCENT_COLORS[sIdx % ACCENT_COLORS.length]
+      return chunkArray.map((w, idx) => {
+        const globalIdx = startIndex + idx
+        let color = 'white'
+        let caseStyle = w.text
+        if (captionStyle === 'beasty') {
+          color = BEASTY_COLORS[globalIdx % BEASTY_COLORS.length]
+          caseStyle = w.text.toUpperCase()
+        } else if (captionStyle === 'pod-p') {
+          color = POD_P_COLORS[globalIdx % POD_P_COLORS.length]
+          caseStyle = w.text.toUpperCase()
+        } else if (captionStyle === 'youshaei') {
+          const isUpper = globalIdx % 2 === 0
+          caseStyle = isUpper ? w.text.toUpperCase() : (w.text.charAt(0).toUpperCase() + w.text.slice(1).toLowerCase())
+          color = isUpper ? 'white' : youshaeiAccent
+        } else if (captionStyle === 'mrbeast' || captionStyle === 'karaoke') {
+          caseStyle = w.text.toUpperCase()
+        }
+        return { ...w, displayColor: color, displayCase: caseStyle, globalIdx }
+      })
+    }
+
+    const flushChunk = (i) => {
+      if (currentChunk.length === 0) return
+      grouped.push({
+        words: processWords(currentChunk, i - currentChunk.length, sentenceIndex),
+        // Exact timestamps — no padding, no guessing
+        start: currentChunk[0].start,
+        end:   currentChunk[currentChunk.length - 1].end
+      })
+      currentChunk = []
+      sentenceIndex++
     }
 
     for (let i = 0; i < captions.length; i++) {
       const word = captions[i]
-      const gap = currentChunk.length > 0 ? (word.start - currentChunk[currentChunk.length - 1].end) : 0
-      
-      // Cut chunk if word limit reached or gap > 0.3s
-      if (currentChunk.length > 0 && (currentChunk.length >= maxWords || gap > 0.3)) {
-         grouped.push({
-           words: processWords(currentChunk, i - currentChunk.length, sentenceIndex),
-           start: currentChunk[0].start,
-           end: currentChunk[currentChunk.length - 1].end
-         })
-         currentChunk = []
-         sentenceIndex++
+      const gap  = currentChunk.length > 0
+        ? word.start - currentChunk[currentChunk.length - 1].end
+        : 0
+
+      // Hard break on silence > 0.8s OR word-count limit hit
+      if (currentChunk.length > 0 && (gap > SILENCE_BREAK || currentChunk.length >= maxWords)) {
+        flushChunk(i)
       }
       currentChunk.push(word)
     }
+    flushChunk(captions.length) // flush remainder
 
-    // Push final straggler chunk
-    if (currentChunk.length > 0) {
-       grouped.push({
-         words: processWords(currentChunk, captions.length - currentChunk.length, sentenceIndex),
-         start: currentChunk[0].start,
-         end: currentChunk[currentChunk.length - 1].end
-       })
-    }
     return grouped
   }, [captions, captionStyle])
 
@@ -108,13 +115,22 @@ export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
     }
   }, [videoRef])
 
-  const activeChunk = chunks.find(chunk => currentTime >= chunk.start && currentTime <= chunk.end)
-
+  // Only show if current time is STRICTLY within a chunk's spoken range.
+  // During any gap (silence, music, pause) activeChunk will be null → blank screen.
+  const activeChunk = chunks.find(chunk =>
+    currentTime >= chunk.start && currentTime <= chunk.end
+  )
   if (!activeChunk) return null
 
-  // Silence gap check
-  const isAnyWordActive = activeChunk.words.some(w => currentTime >= w.start && currentTime <= w.end)
-  if (!isAnyWordActive) return null
+  // Secondary word-level check — hide if between words inside chunk (micro-silence)
+  // Still show the chunk during inter-word gaps < 0.8s so it feels continuous
+  const isAnyWordSpeaking = activeChunk.words.some(
+    w => currentTime >= w.start && currentTime <= w.end
+  )
+  // Show the whole chunk once first word has started, hide after last word ends
+  const chunkStarted = currentTime >= activeChunk.start
+  const chunkEnded   = currentTime > activeChunk.end
+  if (!chunkStarted || chunkEnded) return null
 
   return (
     <div key={activeChunk.start} className={`caption-overlay style-${captionStyle}`}>
