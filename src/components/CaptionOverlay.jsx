@@ -5,24 +5,19 @@ const POD_P_COLORS = [
   '#FF69B4', '#FF00FF', '#00FFFF', '#7DF9FF', '#32CD32', 
   '#FFA500', '#FFFF00', '#800080', '#EE82EE', '#FF7F50', '#FFD700'
 ]
-const ACCENT_COLORS = ['#FF69B4', '#00FFFF', '#FFFF00'] // Pink, Cyan, Yellow
+const ACCENT_COLORS = ['#FF69B4', '#00FFFF', '#FFFF00'] 
 
-export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
+export default function CaptionOverlay({ videoRef, videoMetadata, selectedRatio, captions, captionStyle }) {
   const [currentTime, setCurrentTime] = useState(0)
 
   // ─── Chunking rules ──────────────────────────────────────────────────────
-  // • Gap > 0.8s  → hard break (silence, music, pause) → blank screen in gap
-  // • Gap < 1.0s  → merge into same phrase if word limit not hit
-  // • Max words per chunk by style
-  // • Chunk start = EXACT first word start, chunk end = EXACT last word end
-  // • No block shown during gap between chunks — enforced by activeChunk lookup
   const chunks = useMemo(() => {
     let maxWords = 3
     if (captionStyle === 'beasty')    maxWords = 1
     else if (captionStyle === 'pod-p')   maxWords = 2
     else if (captionStyle === 'karaoke') maxWords = 6
 
-    const SILENCE_BREAK = 0.8  // gaps wider than this force a new chunk
+    const SILENCE_BREAK = 0.8  
 
     const grouped = []
     let currentChunk = []
@@ -55,7 +50,6 @@ export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
       if (currentChunk.length === 0) return
       grouped.push({
         words: processWords(currentChunk, i - currentChunk.length, sentenceIndex),
-        // Exact timestamps — no padding, no guessing
         start: currentChunk[0].start,
         end:   currentChunk[currentChunk.length - 1].end
       })
@@ -65,18 +59,11 @@ export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
 
     for (let i = 0; i < captions.length; i++) {
       const word = captions[i]
-      const gap  = currentChunk.length > 0
-        ? word.start - currentChunk[currentChunk.length - 1].end
-        : 0
-
-      // Hard break on silence > 0.8s OR word-count limit hit
-      if (currentChunk.length > 0 && (gap > SILENCE_BREAK || currentChunk.length >= maxWords)) {
-        flushChunk(i)
-      }
+      const gap  = currentChunk.length > 0 ? word.start - currentChunk[currentChunk.length - 1].end : 0
+      if (currentChunk.length > 0 && (gap > SILENCE_BREAK || currentChunk.length >= maxWords)) flushChunk(i)
       currentChunk.push(word)
     }
-    flushChunk(captions.length) // flush remainder
-
+    flushChunk(captions.length) 
     return grouped
   }, [captions, captionStyle])
 
@@ -87,25 +74,18 @@ export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
 
     const checkTime = () => {
       setCurrentTime(video.currentTime)
-      if (!video.paused && !video.ended) {
-        animationFrameId = requestAnimationFrame(checkTime)
-      }
+      if (!video.paused && !video.ended) animationFrameId = requestAnimationFrame(checkTime)
     }
 
     const handlePlay = () => checkTime()
-    const handlePause = () => {
-      if (animationFrameId) cancelAnimationFrame(animationFrameId)
-      setCurrentTime(video.currentTime)
-    }
+    const handlePause = () => { if (animationFrameId) cancelAnimationFrame(animationFrameId); setCurrentTime(video.currentTime) }
     const handleSeek = () => setCurrentTime(video.currentTime)
 
     video.addEventListener('play', handlePlay)
     video.addEventListener('pause', handlePause)
     video.addEventListener('seeked', handleSeek)
 
-    if (!video.paused && !video.ended) {
-      checkTime()
-    }
+    if (!video.paused && !video.ended) checkTime()
 
     return () => {
       video.removeEventListener('play', handlePlay)
@@ -115,74 +95,74 @@ export default function CaptionOverlay({ videoRef, captions, captionStyle }) {
     }
   }, [videoRef])
 
-  // Only show if current time is STRICTLY within a chunk's spoken range.
-  // During any gap (silence, music, pause) activeChunk will be null → blank screen.
-  const activeChunk = chunks.find(chunk =>
-    currentTime >= chunk.start && currentTime <= chunk.end
-  )
+  const activeChunk = chunks.find(chunk => currentTime >= chunk.start && currentTime <= chunk.end)
   if (!activeChunk) return null
 
-  // Secondary word-level check — hide if between words inside chunk (micro-silence)
-  // Still show the chunk during inter-word gaps < 0.8s so it feels continuous
-  const isAnyWordSpeaking = activeChunk.words.some(
-    w => currentTime >= w.start && currentTime <= w.end
-  )
-  // Show the whole chunk once first word has started, hide after last word ends
-  const chunkStarted = currentTime >= activeChunk.start
-  const chunkEnded   = currentTime > activeChunk.end
-  if (!chunkStarted || chunkEnded) return null
+  // ─── Dynamic Scaling Logic ────────────────────────────────────────────────
+  // Target font size: ~5-7% of video height
+  // Position: lower center (around 70-80% from top)
+  const vHeight = videoMetadata.height || 1080
+  const vWidth = videoMetadata.width || 1920
+  
+  let dynamicFontSize = '32px'
+  let dynamicTop = '75%'
+
+  if (selectedRatio === '9:16') {
+    dynamicFontSize = `${Math.floor(vHeight / 20)}px` 
+    dynamicTop = '78%' // Higher margin for reels
+  } else if (selectedRatio === '16:9') {
+    dynamicFontSize = `${Math.floor(vHeight / 15)}px`
+    dynamicTop = '82%'
+  } else {
+    dynamicFontSize = `${Math.floor(vHeight / 18)}px`
+    dynamicTop = '80%'
+  }
+
+  // Cap mobile preview font size if metadata hasn't loaded properly
+  if (vHeight < 500) dynamicFontSize = '24px'
+
+  const containerStyle = {
+    top: dynamicTop,
+    fontSize: dynamicFontSize,
+    position: 'absolute',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: '90%',
+    textAlign: 'center',
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+    pointerEvents: 'none'
+  }
 
   return (
-    <div key={activeChunk.start} className={`caption-overlay style-${captionStyle}`}>
+    <div key={activeChunk.start} className={`caption-overlay style-${captionStyle}`} style={containerStyle}>
       {activeChunk.words.map((word, index) => {
         const isActive = currentTime >= word.start && currentTime <= word.end
         const isPast = currentTime > word.end
         
         let inlineStyle = { color: word.displayColor }
         let classNames = ["caption-word"]
-        
         if (isActive) classNames.push("active")
         else classNames.push("inactive")
 
-        if (captionStyle === 'karaoke') {
-          if (isActive) inlineStyle.color = '#00FF87';
-          else if (isPast) inlineStyle.color = 'white';
-          else inlineStyle.color = '#555555'; // Dark gray unspoken
-          inlineStyle.fontFamily = "'Montserrat', sans-serif";
-          inlineStyle.fontWeight = 800;
-        } 
-        else if (captionStyle === 'beasty') {
-           inlineStyle.fontFamily = "'Anton', sans-serif";
-           inlineStyle.WebkitTextStroke = '4px black';
-        } 
-        else if (captionStyle === 'deep-diver') {
-           inlineStyle.fontFamily = "'Exo 2', sans-serif";
-           inlineStyle.fontWeight = 700;
-        } 
-        else if (captionStyle === 'pod-p') {
-           inlineStyle.fontFamily = "sans-serif"; 
-           inlineStyle.fontWeight = 900;
-           if (isActive) {
-               inlineStyle.textShadow = `0 0 15px ${word.displayColor}, 0 0 30px ${word.displayColor}`;
-           }
-        } 
-        else if (captionStyle === 'youshaei') {
-           inlineStyle.fontFamily = "'Orbitron', sans-serif";
-           inlineStyle.fontWeight = 700;
-        } 
-        else if (captionStyle === 'mrbeast') {
-           // MrBeast handling is largely CSS, but we inject inline text transform to be safe
-           // and handle active coloring dynamically in CSS or here
-           if (isActive) inlineStyle.color = '#FFE500';
-           else inlineStyle.color = 'white';
+        if (captionStyle === 'mrbeast') {
+          if (isActive) {
+            inlineStyle.color = '#FFE500'
+            inlineStyle.transform = 'scale(1.1)'
+          } else {
+            inlineStyle.color = 'white'
+          }
+        } else if (captionStyle === 'karaoke') {
+          if (isActive) inlineStyle.color = '#00FF87'
+          else if (isPast) inlineStyle.color = 'white'
+          else inlineStyle.color = '#555555'
         }
 
         return (
-          <span 
-            key={index} 
-            className={classNames.join(' ')}
-            style={inlineStyle}
-          >
+          <span key={index} className={classNames.join(' ')} style={inlineStyle}>
             {word.displayCase}
           </span>
         )

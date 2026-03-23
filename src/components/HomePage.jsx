@@ -9,7 +9,23 @@ const STYLES = [
   { id: 'youshaei', name: 'Youshaei', preview: 'Mixed Case • Accent' },
 ]
 
-export default function HomePage({ onTranscribe, selectedLanguage, setSelectedLanguage, onOpenSettings, selectedStyle, setSelectedStyle }) {
+const RATIOS = [
+  { id: '9:16', name: 'Instagram Reels / YouTube Shorts (9:16)' },
+  { id: '16:9', name: 'YouTube Standard (16:9)' },
+  { id: '4:5', name: 'Instagram Feed (4:5)' },
+  { id: '1:1', name: 'Square (1:1)' },
+]
+
+export default function HomePage({ 
+  onTranscribe, 
+  selectedLanguage, 
+  setSelectedLanguage, 
+  onOpenSettings, 
+  selectedStyle, 
+  setSelectedStyle,
+  selectedRatio,
+  setSelectedRatio
+}) {
   const [file, setFile] = useState(null)
 
   const handleFileChange = (e) => {
@@ -21,7 +37,7 @@ export default function HomePage({ onTranscribe, selectedLanguage, setSelectedLa
   const handleSubmit = (e) => {
     e.preventDefault()
     if (file) {
-      onTranscribe(file, selectedLanguage)
+      onTranscribe(file, selectedLanguage, selectedRatio)
     }
   }
 
@@ -68,7 +84,8 @@ export default function HomePage({ onTranscribe, selectedLanguage, setSelectedLa
       </div>
 
       <form onSubmit={handleSubmit} style={{ marginTop: '2rem' }}>
-        <div style={{ marginBottom: '2rem' }}>
+        <div style={{ marginBottom: '1.5rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.5rem', opacity: 0.8, fontSize: '0.9rem' }}>Upload Video</label>
           <input 
             type="file" 
             accept="video/*" 
@@ -77,13 +94,24 @@ export default function HomePage({ onTranscribe, selectedLanguage, setSelectedLa
           />
         </div>
         
-        <div style={{ marginBottom: '2rem' }}>
-          <select value={selectedLanguage} onChange={(e) => setSelectedLanguage(e.target.value)}>
-            <option value="auto">Auto Detect</option>
-            <option value="en">English</option>
-            <option value="hi">Hindi (Devanagari)</option>
-            <option value="hinglish">Hinglish</option>
-          </select>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem' }}>
+          <div>
+            <label style={{ display: 'block', marginBottom: '0.5rem', opacity: 0.8, fontSize: '0.9rem' }}>Audio Language</label>
+            <select value={selectedLanguage} onChange={(e) => setSelectedLanguage(e.target.value)}>
+              <option value="auto">Auto Detect</option>
+              <option value="en">English</option>
+              <option value="hi">Hindi (Devanagari)</option>
+              <option value="hinglish">Hinglish</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', marginBottom: '0.5rem', opacity: 0.8, fontSize: '0.9rem' }}>Platform / Ratio</label>
+            <select value={selectedRatio} onChange={(e) => setSelectedRatio(e.target.value)}>
+              {RATIOS.map(r => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <button 

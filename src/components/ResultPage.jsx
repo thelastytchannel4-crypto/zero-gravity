@@ -2,14 +2,9 @@ import { useRef, useMemo } from 'react'
 import CaptionOverlay from './CaptionOverlay'
 
 // ─── Build phrase-level chunks from word array ────────────────────────────────
-// Rules:
-//  • Gap > 0.8s  → forced break (silence / music / pause) — new SRT block
-//  • Gap < 1.0s  → merge into same phrase (natural flow)
-//  • Chunk start = exact first-word start, end = exact last-word end
-//  • No empty blocks, no fillers, no placeholder text
 function buildSRTChunks(captions) {
   const SILENCE_BREAK = 0.8
-  const MAX_WORDS = 8 // generous for SRT (2 lines worth)
+  const MAX_WORDS = 8 
   const chunks = []
   let cur = []
 
@@ -32,10 +27,9 @@ function buildSRTChunks(captions) {
   return chunks
 }
 
-export default function ResultPage({ videoURL, captions, language, selectedStyle, onReset }) {
+export default function ResultPage({ videoURL, videoMetadata, selectedRatio, captions, language, selectedStyle, onReset }) {
   const videoRef = useRef(null)
 
-  // ─── Timestamp formatter ──────────────────────────────────────────────────
   const fmt = (seconds, sep) => {
     const ms   = Math.round(seconds * 1000)
     const h    = Math.floor(ms / 3600000).toString().padStart(2, '0')
@@ -45,11 +39,8 @@ export default function ResultPage({ videoURL, captions, language, selectedStyle
     return `${h}:${m}:${s}${sep}${msec}`
   }
 
-  // Build phrase chunks once
   const srtChunks = useMemo(() => buildSRTChunks(captions), [captions])
 
-  // ─── SRT Download ─────────────────────────────────────────────────────────
-  // One block = one natural phrase, exact start/end, no empty blocks
   const downloadSRT = () => {
     const lines = srtChunks.map((chunk, i) =>
       `${i + 1}\n${fmt(chunk.start, ',')} --> ${fmt(chunk.end, ',')}\n${chunk.text}`
@@ -61,7 +52,6 @@ export default function ResultPage({ videoURL, captions, language, selectedStyle
     URL.revokeObjectURL(url)
   }
 
-  // ─── VTT Download ─────────────────────────────────────────────────────────
   const downloadVTT = () => {
     const lines = srtChunks.map(chunk =>
       `${fmt(chunk.start, '.')} --> ${fmt(chunk.end, '.')}\n${chunk.text}`
@@ -84,7 +74,13 @@ export default function ResultPage({ videoURL, captions, language, selectedStyle
           className="video-player"
           playsInline
         />
-        <CaptionOverlay videoRef={videoRef} captions={captions} captionStyle={selectedStyle} />
+        <CaptionOverlay 
+          videoRef={videoRef} 
+          videoMetadata={videoMetadata}
+          selectedRatio={selectedRatio}
+          captions={captions} 
+          captionStyle={selectedStyle} 
+        />
       </div>
 
       <div className="download-buttons">

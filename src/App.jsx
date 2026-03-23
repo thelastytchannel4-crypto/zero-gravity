@@ -63,9 +63,11 @@ export default function App() {
 
   const [videoFile, setVideoFile] = useState(null)
   const [videoURL, setVideoURL] = useState(null)
+  const [videoMetadata, setVideoMetadata] = useState({ width: 0, height: 0, ratio: 'auto' })
   const [captions, setCaptions] = useState([])
   const [selectedLanguage, setSelectedLanguage] = useState('auto')
   const [selectedStyle, setSelectedStyle] = useState('mrbeast')
+  const [selectedRatio, setSelectedRatio] = useState('9:16')
 
   const [processingError, setProcessingError] = useState(null)
   const [processingStep, setProcessingStep] = useState('')
@@ -89,117 +91,52 @@ export default function App() {
     setProcessingError(null)
     setProcessingStep('')
 
-    // 90-second global safety timeout
     const globalTimer = setTimeout(() => {
       setProcessingError('Process timed out after 90 seconds. Please retry.')
       setIsTranscribing(false)
     }, 90000)
 
     try {
-      // ── Step 1 ────────────────────────────────────────────────────────────
-      console.log('Step 1 - Video file received:', file.name, file.size)
       setProcessingStep('Extracting audio from video...')
-
       if (file.size > 50 * 1024 * 1024) throw new Error('Please use a video under 2 minutes')
 
-      // ── Step 2 ────────────────────────────────────────────────────────────
-      console.log('Step 2 - Starting audio extraction')
       const audioContext = new AudioContext({ sampleRate: 16000 })
-
-      // 30-second timeout on audio decode
-      let arrayBuffer
-      try {
-        const decodeP = file.arrayBuffer()
-        const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error('Audio extraction timed out after 30 seconds')), 30000))
-        arrayBuffer = await Promise.race([decodeP, timeoutP])
-      } catch (e) {
-        throw new Error('Audio extraction failed: ' + e.message)
-      }
-
-      // ── Step 3 ────────────────────────────────────────────────────────────
-      let audioBuffer
-      try {
-        audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
-      } catch (e) {
-        throw new Error('Could not decode audio from video. Try a different file format.')
-      }
+      const arrayBuffer = await file.arrayBuffer()
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
       const float32Array = audioBuffer.getChannelData(0)
-      console.log('Step 3 - Audio extracted successfully', float32Array.length)
 
-      // ── Step 4 ────────────────────────────────────────────────────────────
-      console.log('Step 4 - Converting to WAV blob')
       setProcessingStep('Converting audio format...')
       const wavBlob = encodeWAV(float32Array, 16000)
-      console.log('Step 5 - WAV blob created', wavBlob.size)
 
-      // ── Step 5: Build FormData (NO task param — not supported by Groq) ───
-      console.log('Step 6 - Sending to Groq API')
       setProcessingStep('Sending to Groq AI...')
-
       const formData = new FormData()
       formData.append('file', wavBlob, 'audio.wav')
       formData.append('model', 'whisper-large-v3-turbo')
       formData.append('response_format', 'verbose_json')
       formData.append('timestamp_granularities[]', 'word')
-      // ── Language param strategy ────────────────────────────────────────────
-      // English  → force 'en'  (prevents hallucination in other scripts)
-      // Hindi    → force 'hi'  (want Devanagari output, then transliterate)
-      // Hinglish → NO language param — intentional auto-detect.
-      //            Sending 'hi' coerces Devanagari output.
-      //            Sending 'en' coerces English translation.
-      //            Neither is correct. Auto-detect + rich prompt = best result.
-      // Auto     → no language param
+
       if (language === 'en') formData.append('language', 'en')
       if (language === 'hi') formData.append('language', 'hi')
-      // hinglish + auto → no language param (intentional)
+      // Hinglish/Auto → no language param (critical for mixed audio)
 
-      // ── Few-shot Whisper conditioning prompts (≤224 tokens) ───────────────
-      // Whisper treats the prompt as a "previous transcript" — it biases the
-      // model toward the vocabulary, script & style demonstrated in examples.
-      // For Hinglish: seed with real Roman-script Hinglish so the model stays
-      // in that register instead of defaulting to English translation.
-      const PROMPTS = {
-        hinglish:
-          'Arre bhai, yeh scene toh fire hai yaar! ' +
-          'Kya chal raha hai bro, sab theek toh hai na? ' +
-          'Aaj ka din bohot mast tha, seriously next level experience tha. ' +
-          'Dekh yaar, isko samajhna padega properly. ' +
-          'Main bol raha tha ki yeh wala option better hai. ' +
-          'Transcribe EXACTLY as spoken in Roman script Hinglish. ' +
-          'Do NOT translate to English. Do NOT use Devanagari. Preserve all slang.',
-        hi:
-          'यह हिंदी ऑडियो है। बिल्कुल जैसा बोला गया वैसा देवनागरी में लिखो। ' +
-          'अनुवाद मत करो। व्याकरण मत सुधारो।',
-        en:
-          'English audio. Transcribe word-for-word exactly as spoken. ' +
-          'No translation, no grammar fixes, no text during silence or music.',
-        auto:
-          'Transcribe exactly as spoken in the original language. ' +
-          'No translation. Skip silence and music.',
-      }
-      formData.append('prompt', PROMPTS[language] || PROMPTS.auto)
+      const HINGLISH_PROMPT = 
+        "Transcribe exactly in original spoken Hinglish (Hindi-English mix), " +
+        "keep all Hindi words in Roman script as heard, no translation to pure English, " +
+        "preserve slang like bhai yaar arre kya bol raha, exact natural phrasing only."
 
-      // ── Step 6: Fetch with 60-second timeout ──────────────────────────────
-      let response
-      try {
-        const fetchP = fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-          method : 'POST',
-          headers: { 'Authorization': 'Bearer ' + apiKey },
-          body   : formData
-        })
-        const toP = new Promise((_, rej) => setTimeout(() => rej(new Error('API request timed out after 60 seconds')), 60000))
-        response = await Promise.race([fetchP, toP])
-      } catch (e) {
-        throw new Error('Network request failed: ' + e.message)
-      }
+      const hiPrompt = "यह हिंदी ऑडियो है। बिल्कुल जैसा बोला गया वैसा देवनागरी में लिखो। अनुवाद मत करो।"
+      const enPrompt = "English audio. Transcribe word-for-word exactly as spoken. No translation."
 
-      console.log('Step 7 - Groq response received, status:', response.status)
+      formData.append('prompt', language === 'hinglish' ? HINGLISH_PROMPT : (language === 'hi' ? hiPrompt : enPrompt))
 
-      if (response.status === 401) throw new Error('Invalid API key — please check your Groq dashboard')
-      if (response.status === 413) throw new Error('Please use a video under 2 minutes')
+      const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + apiKey },
+        body: formData
+      })
+
       if (!response.ok) {
         const errText = await response.text()
-        console.error('Groq Error Response:', errText)
         let msg = errText
         try { const js = JSON.parse(errText); if (js.error?.message) msg = js.error.message } catch (_) {}
         throw new Error('API Error: ' + msg)
@@ -207,29 +144,14 @@ export default function App() {
 
       setProcessingStep('Generating captions...')
       const result = await response.json()
-      console.log('Step 7 - Full Groq result:', result)
-      console.log('Step 8 - Words array:', result.words)
 
       if (!result.words || result.words.length === 0) throw new Error('No speech detected in this audio.')
 
-      // ── Step 7: Post-process & map words ──────────────────────────────────
-      // Filter out noise artifacts before building caption list:
-      //   • Duration < 50ms  → likely a model glitch / background click
-      //   • start === end    → zero-length timestamp, meaningless
-      //   • text is blank / pure punctuation → nothing to display
-      //   • text is common hallucination filler (Whisper sometimes emits these)
-      const HALLUCINATIONS = new Set([
-        'you', '...', '[music]', '[inaudible]', '[applause]',
-        '[laughter]', '(music)', '(inaudible)', ''
-      ])
-
+      const HALLUCINATIONS = new Set(['you', '...', '[music]', '[inaudible]', '[laughter]', ''])
       const rawWords = result.words.filter((w) => {
         const duration = w.end - w.start
-        const clean    = w.word.trim().replace(/[.,!?;:'"()-]/g, '')
-        if (duration < 0.05)                     return false  // <50ms — noise
-        if (w.start === w.end)                   return false  // zero-length
-        if (clean.length === 0)                  return false  // punctuation only
-        if (HALLUCINATIONS.has(clean.toLowerCase())) return false
+        const cleanText = w.word.trim().toLowerCase().replace(/[.,!?;:'"()-]/g, '')
+        if (duration < 0.05 || w.start === w.end || cleanText.length === 0 || HALLUCINATIONS.has(cleanText)) return false
         return true
       })
 
@@ -254,13 +176,24 @@ export default function App() {
     }
   }
 
-  const handleTranscribe = (file, language) => {
+  const handleTranscribe = (file, language, ratio) => {
     setVideoFile(file)
     const url = URL.createObjectURL(file)
     setVideoURL(url)
     setSelectedLanguage(language)
+    setSelectedRatio(ratio)
     setPage('processing')
-    performGroqTranscription(file, language)
+
+    const video = document.createElement('video')
+    video.src = url
+    video.onloadedmetadata = () => {
+      setVideoMetadata({ 
+        width: video.videoWidth, 
+        height: video.videoHeight, 
+        ratio: video.videoWidth / video.videoHeight 
+      })
+      performGroqTranscription(file, language)
+    }
   }
 
   const handleRetry = () => {
@@ -277,8 +210,8 @@ export default function App() {
     <ErrorBoundary>
       <SpaceBackground />
       <div className="app-container">
-        {page === 'setup'      && <SetupPage onSave={handleSaveKey} />}
-        {page === 'home'       && (
+        {page === 'setup' && <SetupPage onSave={handleSaveKey} />}
+        {page === 'home' && (
           <HomePage
             onTranscribe={handleTranscribe}
             selectedLanguage={selectedLanguage}
@@ -286,19 +219,18 @@ export default function App() {
             onOpenSettings={handleOpenSettings}
             selectedStyle={selectedStyle}
             setSelectedStyle={handleSetStyle}
+            selectedRatio={selectedRatio}
+            setSelectedRatio={setSelectedRatio}
           />
         )}
         {page === 'processing' && (
-          <ProcessingPage
-            error={processingError}
-            step={processingStep}
-            onRetry={handleRetry}
-            isTranscribing={isTranscribing}
-          />
+          <ProcessingPage error={processingError} step={processingStep} onRetry={handleRetry} isTranscribing={isTranscribing} />
         )}
-        {page === 'result'     && (
+        {page === 'result' && (
           <ResultPage
             videoURL={videoURL}
+            videoMetadata={videoMetadata}
+            selectedRatio={selectedRatio}
             captions={captions}
             selectedStyle={selectedStyle}
             language={selectedLanguage}
