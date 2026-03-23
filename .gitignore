@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+package-lock.json
+*.py
+*.pyc
+__pycache__
+requirements.txt
+pyproject.toml
