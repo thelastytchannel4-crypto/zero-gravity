@@ -120,7 +120,12 @@ export default function App() {
       if (!response.ok) {
         const errText = await response.text()
         console.error("Groq Error Response:", errText)
-        throw new Error("Network error during API call. Please retry.")
+        let parsedErr = errText
+        try {
+          const js = JSON.parse(errText)
+          if (js.error && js.error.message) parsedErr = js.error.message
+        } catch(e) {}
+        throw new Error(`API Error: ${parsedErr}`)
       }
 
       const result = await response.json()
